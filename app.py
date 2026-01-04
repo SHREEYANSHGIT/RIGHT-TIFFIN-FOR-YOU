@@ -197,6 +197,11 @@ if role == "Tiffin Provider":
 
                 with c2:
                     st.markdown(f"### {data.get('name', 'Unknown Tiffin')}")
+                    # show short description if available
+                    desc = data.get('description', '')
+                    if desc:
+                        short_desc = desc if len(desc.split()) <= 50 else ' '.join(desc.split()[:50]) + '...'
+                        st.markdown(f"**Description:** {short_desc}")
                     col_a, col_b = st.columns(2)
                     with col_a:
                         st.markdown(f"📍 **Location:** {data.get('location', 'N/A')}")
@@ -281,6 +286,8 @@ if role == "Tiffin Provider":
                 phone = st.text_input("Contact Number", value=user_data.get("phone", ""), key="add_phone")
                 location = st.text_input("Location", value=user_data.get("location", ""), key="add_loc")
                 delivery_locations = st.text_input("Delivery Locations (comma-separated)", placeholder="e.g., RGPV Campus, Downtown", key="add_delivery")
+                # Short description field (limit to ~50 words)
+                description = st.text_area("Short Description (max 50 words)", placeholder="Briefly describe this tiffin in up to 50 words", key="add_description", height=80)
                 food_type = st.selectbox("Food Type", ["Veg", "Non-Veg", "Both"], key="add_food")
                 timing_morning = st.text_input("Morning Timing", placeholder="e.g., 7:00 AM - 9:00 AM")
                 timing_night = st.text_input("Night Timing", placeholder="e.g., 6:00 PM - 8:00 PM")
@@ -293,26 +300,30 @@ if role == "Tiffin Provider":
                 img2 = st.text_input("Image URL 2")
                 img3 = st.text_input("Image URL 3")
 
-            if st.button("✅ Add Tiffin", use_container_width=True):
-                if not name or not location:
-                    st.error("❌ Tiffin name and location are required")
-                else:
-                    db.collection("tiffins").add({
-                        "provider_id": user_id,
-                        "name": name,
-                        "phone": phone,
-                        "location": location,
-                        "delivery_locations": [l.strip() for l in delivery_locations.split(",") if l.strip()],
-                        "food_type": food_type,
-                        "timing_morning": timing_morning,
-                        "timing_night": timing_night,
-                        "price_monthly": price_monthly,
-                        "price_daily": price_daily,
-                        "price_per_tiffin": price_per_tiffin,
-                        "image_urls": [img1, img2, img3]
-                    })
-                    st.success("✅ Tiffin added successfully!")
-                    st.rerun()
+                if st.button("✅ Add Tiffin", use_container_width=True):
+                    if not name or not location:
+                        st.error("❌ Tiffin name and location are required")
+                    else:
+                        # enforce ~50-word limit by trimming
+                        desc_words = (description or "").split()
+                        short_desc = " ".join(desc_words[:50])
+                        db.collection("tiffins").add({
+                            "provider_id": user_id,
+                            "name": name,
+                            "phone": phone,
+                            "location": location,
+                            "delivery_locations": [l.strip() for l in delivery_locations.split(",") if l.strip()],
+                            "food_type": food_type,
+                            "timing_morning": timing_morning,
+                            "timing_night": timing_night,
+                            "price_monthly": price_monthly,
+                            "price_daily": price_daily,
+                            "price_per_tiffin": price_per_tiffin,
+                            "image_urls": [img1, img2, img3],
+                            "description": short_desc,
+                        })
+                        st.success("✅ Tiffin added successfully!")
+                        st.rerun()
 
         with sub_tab2:
             my_tiffins = db.collection("tiffins").where("provider_id", "==", user_id).stream()
@@ -345,6 +356,7 @@ if role == "Tiffin Provider":
                             e_img2 = st.text_input("Image 2", value=imgs[1])
                             e_img3 = st.text_input("Image 3", value=imgs[2])
                             e_delivery = st.text_input("Delivery Locations (comma-separated)", value=",".join(t_data.get("delivery_locations", [])))
+                            e_description = st.text_area("Short Description (max 50 words)", value=t_data.get("description", ""))
 
                         col_update, col_delete = st.columns([1, 1])
                         with col_update:
@@ -360,7 +372,8 @@ if role == "Tiffin Provider":
                                     "price_daily": e_pd,
                                     "price_per_tiffin": e_pt,
                                     "image_urls": [e_img1, e_img2, e_img3],
-                                    "delivery_locations": [x.strip() for x in e_delivery.split(",") if x.strip()]
+                                        "delivery_locations": [x.strip() for x in e_delivery.split(",") if x.strip()],
+                                        "description": " ".join((e_description or "").split()[:50])
                                 })
                                 st.success("✅ Updated!")
                                 st.rerun()
@@ -420,6 +433,11 @@ elif role == "Student":
 
                 with c2:
                     st.markdown(f"### {data.get('name', 'Unknown Tiffin')}")
+                    # show short description if available
+                    desc = data.get('description', '')
+                    if desc:
+                        short_desc = desc if len(desc.split()) <= 50 else ' '.join(desc.split()[:50]) + '...'
+                        st.markdown(f"**Description:** {short_desc}")
                     col_a, col_b = st.columns(2)
                     with col_a:
                         st.markdown(f"📍 **Location:** {data.get('location', 'N/A')}")
@@ -446,11 +464,16 @@ elif role == "Student":
                     col_review = st.columns(1)[0]
                     rating = st.slider("⭐ Rate (1–5)", 1, 5, key=f"rate_{t.id}")
                     review = st.text_area("💬 Write Review", key=f"rev_{t.id}", height=80)
-
                     if st.button("✅ Submit Review", key=f"btn_{t.id}", use_container_width=True):
                         price_val = data.get('price_per_tiffin', None)
                         ai_score, ai_summary = analyze_review(review, price_val)
-                        db.collection("reviews").add({
+                        # check if this student already has a review for this tiffin
+                        existing_rev = None
+                        for rr in db.collection("reviews").where("tiffin_id", "==", t.id).where("user_id", "==", user_id).stream():
+                            existing_rev = rr
+                            break
+
+                        review_payload = {
                             "tiffin_id": t.id,
                             "user_id": user_id,
                             "rating": rating,
@@ -458,8 +481,16 @@ elif role == "Student":
                             "ai_score": ai_score,
                             "ai_summary": ai_summary,
                             "price": price_val,
-                        })
-                        st.success("✅ Review submitted!")
+                        }
+
+                        if existing_rev:
+                            # update the existing review document
+                            db.collection("reviews").document(existing_rev.id).update(review_payload)
+                            st.success("✅ Review updated!")
+                        else:
+                            db.collection("reviews").add(review_payload)
+                            st.success("✅ Review submitted!")
+
                         st.info(f"🤖 AI Score: {ai_score}/10\n\n📝 {ai_summary}")
 
                     with st.expander("📖 View Old Reviews"):
