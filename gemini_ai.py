@@ -22,39 +22,75 @@ def try_gemini(prompt: str):
         return None
 
 
-# Fallback AI (LOCAL – always works)
 def fallback_ai(review_text: str, price: float | None = None):
     text = review_text.lower()
 
-    positive = ["good", "tasty", "excellent", "awesome", "nice", "healthy", "fresh", "delicious"]
-    negative = ["bad", "worst", "oily", "cold", "late", "poor", "smelly", "stale"]
+    # Strong positive signals (high impact)
+    strong_positive = [
+        "very tasty", "excellent", "awesome", "amazing", "delicious",
+        "homemade", "fresh", "healthy", "perfect", "best", "love it",
+        "superb", "mouth watering"
+    ]
 
-    score = 5
-    for w in positive:
+    # Mild positive signals (low impact)
+    mild_positive = [
+        "good", "nice", "okay", "decent", "fine", "satisfactory",
+        "soft roti", "good taste", "less oil", "balanced spice",
+        "clean", "hygienic", "good quantity", "value for money"
+    ]
+
+    # Strong negative signals (high impact)
+    strong_negative = [
+        "worst", "very bad", "pathetic", "disgusting", "spoiled",
+        "smelly", "stale", "raw", "uncooked", "food poisoning"
+    ]
+
+    # Mild negative signals (low impact)
+    mild_negative = [
+        "bad", "average", "oily", "too spicy", "bland", "cold food",
+        "late", "delayed", "small quantity", "overpriced",
+        "not fresh", "sometimes late", "inconsistent"
+    ]
+
+    score = 5  # neutral baseline
+
+    # Apply strong positives
+    for w in strong_positive:
+        if w in text:
+            score += 2
+
+    # Apply mild positives
+    for w in mild_positive:
         if w in text:
             score += 1
-    for w in negative:
+
+    # Apply strong negatives
+    for w in strong_negative:
+        if w in text:
+            score -= 2
+
+    # Apply mild negatives
+    for w in mild_negative:
         if w in text:
             score -= 1
 
-    # Simple price influence: cheaper perceived value increases score, expensive may lower expectation
+    # 🔹 Price perception logic (value-for-money bias)
     if price is not None:
         try:
             p = float(price)
-            if p >= 200:
+            if p >= 3500:
                 score -= 2
-            elif p >= 100:
+            elif p >= 2500:
                 score -= 1
-            elif p >= 50:
+            elif p <= 2000:
                 score += 1
-            else:
-                score += 2
         except Exception:
             pass
 
+    # Clamp score to 0–10
     score = max(0, min(score, 10))
 
-    return score, "AI-based taste analysis (fallback)" 
+    return score, "Rule-based review sentiment analysis (fallback)"
 
 
 def analyze_review(review_text: str, price: float | None = None):
@@ -104,3 +140,63 @@ Price: {price if price is not None else 'N/A'}
 
     # 🔁 Fallback (guaranteed)
     return fallback_ai(review_text, price)
+
+
+def generate_one_line_reason(context: str) -> str:
+    """Return a concise one-line reason (prefer AI via Gemini, otherwise fallback to trimmed context)."""
+    if not context or not context.strip():
+        return "Recommended based on reviews and ratings."
+
+    prompt = f"""
+Given the following short context about a tiffin option, provide a single short sentence (one line) explaining why this is a good recommendation. Keep it under 25 words.
+
+Context:
+{context}
+"""
+
+    out = try_gemini(prompt)
+    if out:
+        # take the first non-empty line
+        for line in out.splitlines():
+            line = line.strip()
+            if line:
+                return line if len(line) <= 220 else line[:217] + "..."
+
+    # fallback: return a trimmed version of the context
+    txt = context.strip().replace("\n", " ")
+    return (txt[:217] + "...") if len(txt) > 220 else txt
+
+
+def generate_short_summary(context: str, min_words: int = 5, max_words: int = 7) -> str:
+    """Generate a very short summary (preferably between min_words and max_words).
+    Uses Gemini when available; falls back to taking the first max_words from the context.
+    """
+    if not context or not context.strip():
+        return "No reviews yet."
+
+    prompt = f"""
+Given the following user reviews, produce a concise summary phrase of {min_words} to {max_words} words capturing the main taste/quality points. Output only the phrase (no extra explanation).
+
+Reviews:
+{context}
+"""
+
+    out = try_gemini(prompt)
+    if out:
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            words = line.split()
+            if len(words) <= max_words and len(words) >= min_words:
+                return line
+            if len(words) > max_words:
+                return " ".join(words[:max_words])
+            # if shorter than min_words, still return it (it's better than nothing)
+            return line
+
+    # fallback: take first max_words from the raw context
+    raw_words = context.replace("\n", " ").split()
+    if not raw_words:
+        return "No reviews yet."
+    return " ".join(raw_words[:max_words])
