@@ -1,7 +1,7 @@
 import streamlit as st
 from firebase_config import db
 from auth import register_user, login_user
-from gemini_ai import analyze_review
+from gemini_ai import analyze_review, generate_one_line_reason, generate_short_summary
 
 # ================= PAGE CONFIG =================
 st.set_page_config(page_title="RIGHT TIFFIN FOR YOU", layout="wide", initial_sidebar_state="expanded")
@@ -151,11 +151,201 @@ user_ref = db.collection("users").document(user_id)
 user_snap = user_ref.get()
 user_data = user_snap.to_dict() if user_snap.exists else {}
 
+
+def render_top_rated_section():
+    """Render the Top Rated Tiffins (AI Powered) section. Reusable for both Student and Provider tabs."""
+    st.markdown("---")
+    st.markdown("## 🏆 Top Rated Tiffins (AI Powered)")
+
+    # Build combined ranking using ai_score (0-10), user rating (1-5), and price (lower is better)
+    reviews = db.collection("reviews").stream()
+    stats = {}
+    for r in reviews:
+        d = r.to_dict()
+        tid = d.get("tiffin_id")
+        if tid not in stats:
+            stats[tid] = {"ai_scores": [], "ratings": [], "prices": []}
+        stats[tid]["ai_scores"].append(d.get("ai_score", 0) or 0)
+        stats[tid]["ratings"].append(d.get("rating", 0) or 0)
+        if d.get("price") is not None:
+            stats[tid]["prices"].append(d.get("price"))
+
+    if stats:
+        # gather price range
+        prices = []
+        for v in stats.values():
+            prices.extend(v.get("prices", []))
+        min_price = min(prices) if prices else 0
+        max_price = max(prices) if prices else 0
+
+        combined = []
+        for tid, v in stats.items():
+            avg_ai = (sum(v["ai_scores"]) / len(v["ai_scores"])) if v["ai_scores"] else 0.0
+            avg_rating = (sum(v["ratings"]) / len(v["ratings"])) if v["ratings"] else 0.0
+            # scale rating 1-5 to 0-10
+            rating_scaled = ((avg_rating - 1) / 4) * 10 if avg_rating else 0.0
+            # price score: lower price gets higher score
+            price_val = (sum(v["prices"]) / len(v["prices"])) if v["prices"] else None
+            if price_val is None or min_price == max_price:
+                price_score = 5.0
+            else:
+                price_score = ((max_price - price_val) / (max_price - min_price)) * 10
+
+            combined_score = 0.5 * avg_ai + 0.3 * rating_scaled + 0.2 * price_score
+            combined.append((tid, combined_score, avg_ai, avg_rating, price_val))
+
+        combined_sorted = sorted(combined, key=lambda x: x[1], reverse=True)
+
+        # Build detailed entries with tiffin metadata for category selection
+        entries = []
+        for tid, combined_score, avg_ai, avg_rating, price_val in combined:
+            tdoc = db.collection("tiffins").document(tid).get()
+            if not tdoc or not tdoc.exists:
+                continue
+            tdata = tdoc.to_dict()
+            food_type = (tdata.get("food_type") or "").lower()
+            # prefer monthly price for budget calculations; fallback to review price
+            monthly = tdata.get("price_monthly") if tdata.get("price_monthly") is not None else price_val
+            entries.append({
+                "tid": tid,
+                "name": tdata.get("name", "Unknown"),
+                "combined": combined_score,
+                "avg_ai": avg_ai,
+                "avg_rating": avg_rating,
+                "price": price_val,
+                "monthly": monthly,
+                "food_type": food_type,
+            })
+
+        # Helper to derive a reason (prefer AI summary or short review excerpt)
+        def derive_reason(tid, fallback_text):
+            revs = db.collection("reviews").where("tiffin_id", "==", tid).stream()
+            for rr in revs:
+                rdata = rr.to_dict()
+                if rdata.get("ai_summary"):
+                    return rdata.get("ai_summary")
+                if rdata.get("review"):
+                    txt = rdata.get("review").strip()
+                    if txt:
+                        return (txt[:120] + "...") if len(txt) > 120 else txt
+            return fallback_text
+
+        # Compute winners for each category
+        winner = {"budget": None, "taste": None, "overall": None, "veg": None, "nonveg": None}
+
+        # Precompute min/max monthly price for budget normalization
+        monthly_prices = [e["monthly"] for e in entries if e.get("monthly") is not None]
+        min_month = min(monthly_prices) if monthly_prices else None
+        max_month = max(monthly_prices) if monthly_prices else None
+
+        def monthly_price_score(p):
+            if p is None or min_month is None or max_month is None or min_month == max_month:
+                return 5.0
+            return ((max_month - p) / (max_month - min_month)) * 10
+
+        # Best Budget: low monthly cost but good rating (use monthly prices)
+        best_budget = None
+        best_budget_score = -1
+        for e in entries:
+            ps = monthly_price_score(e.get("monthly")) if e.get("monthly") is not None else 5.0
+            rating_scaled = ((e["avg_rating"] - 1) / 4) * 10 if e["avg_rating"] else 0.0
+            # Budget preference: 80% monthly price importance, 20% rating
+            bscore = 0.8 * ps + 0.2 * rating_scaled
+            if bscore > best_budget_score:
+                best_budget_score = bscore
+                best_budget = e
+        winner["budget"] = best_budget
+
+        # Best Taste: select by AI taste score (prefer entries with strong taste scores)
+        taste_candidates = [e for e in entries if (e.get("avg_ai") or 0) >= 7]
+        if taste_candidates:
+            winner["taste"] = max(taste_candidates, key=lambda x: x.get("avg_ai", 0))
+        else:
+            winner["taste"] = max(entries, key=lambda x: x.get("avg_ai", 0)) if entries else None
+
+        # Best Overall: previously computed combined
+        winner["overall"] = max(entries, key=lambda x: x["combined"]) if entries else None
+
+        # Best Veg / Jain
+        veg_entries = [e for e in entries if "veg" in (e.get("food_type") or "")]
+        winner["veg"] = max(veg_entries, key=lambda x: x["combined"]) if veg_entries else None
+
+        # Best Non-Veg
+        nonveg_entries = [e for e in entries if "non" in (e.get("food_type") or "")]
+        winner["nonveg"] = max(nonveg_entries, key=lambda x: x["combined"]) if nonveg_entries else None
+
+        # Render the five recommendation boxes
+        labels = [("💰 Best Budget", "budget"), ("😋 Best Taste", "taste"), ("⭐ Best Overall", "overall"), ("🥬 Best Veg / Jain", "veg"), ("🍗 Best Non-Veg", "nonveg")]
+
+        cols5 = st.columns(5)
+        for i, (label_text, key_cat) in enumerate(labels):
+            e = winner.get(key_cat)
+            with cols5[i]:
+                if not e:
+                    st.info(f"{label_text}\nNo eligible tiffin")
+                    continue
+                # craft reason
+                # compute displayed metrics
+                avg_user = e.get('avg_rating', 0.0)
+                avg_ai = e.get('avg_ai', 0.0)
+                overall = e.get('combined', 0.0)
+
+                if key_cat == "budget":
+                    reason_fallback = f"Low price • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
+                elif key_cat == "taste":
+                    reason_fallback = f"High AI taste score {avg_ai:.1f}/10 • Avg user {avg_user:.1f}/5"
+                elif key_cat == "overall":
+                    reason_fallback = f"Overall score {overall:.2f}/10 • AI {avg_ai:.1f}/10 • User {avg_user:.1f}/5"
+                elif key_cat == "veg":
+                    reason_fallback = f"Vegetarian • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
+                else:
+                    reason_fallback = f"Non-veg • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
+
+                # color coding for AI score: >7 green, 4-7 yellow, <4.5 red
+                try:
+                    aival = float(avg_ai)
+                except Exception:
+                    aival = 0.0
+                if aival > 7:
+                    ai_color = "#16a34a"
+                elif aival >= 4:
+                    ai_color = "#d97706"
+                else:
+                    ai_color = "#dc2626"
+
+                # color coding for user avg: >3.5 green, 2.5-3.5 yellow, else red
+                try:
+                    uval = float(avg_user)
+                except Exception:
+                    uval = 0.0
+                if uval > 3.5:
+                    user_color = "#16a34a"
+                elif uval >= 2.5:
+                    user_color = "#d97706"
+                else:
+                    user_color = "#dc2626"
+
+                # ask AI to produce a single-line reason (fallback to a clear budget message)
+                ai_reason = generate_one_line_reason(f"{label_text} candidate: {e['name']}. {reason_fallback}. Monthly price: {e.get('monthly', 'N/A')}.")
+                if key_cat == "budget":
+                    ai_reason = ai_reason or "It's the top budget choice, offering a low monthly price."
+
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{label_text} - {e['name']}</h3>
+                    <p style="font-size:14px;">Avg user rating: <span style='color:{user_color}; font-weight:600'>{avg_user:.1f}/5</span> • AI rating: <span style='color:{ai_color}; font-weight:600'>{avg_ai:.1f}/10</span> • Overall: {overall:.2f}/10</p>
+                    <p style="font-size: 16px; color: #FF6B35;">Low price • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10</p>
+                    <p style="margin-top:6px; font-style:italic;">Why: {ai_reason}</p>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("No ratings yet. Be the first to review!")
+
 # ================= TIFFIN PROVIDER =================
 if role == "Tiffin Provider":
     st.markdown(f"### 👨‍🍳 Welcome, {user_data.get('name', 'Provider')}!")
     
-    tab1, tab2 = st.tabs(["🔍 Browse Tiffins", "👤 Profile"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Browse Tiffins", "🏆 Top Rated", "👤 Profile"])
 
     with tab1:
         col1, col2 = st.columns(2)
@@ -189,7 +379,7 @@ if role == "Tiffin Provider":
                     if image_list:
                         imgs = []
                         for img in image_list:
-                            imgs.append(f'<div style="flex:0 0 auto;scroll-snap-align:center;border-radius:12px;overflow:hidden;height:420px;"><img src="{img}" style="height3:20px;object-fit:cover;display:block;"></div>')
+                            imgs.append(f'<div style="flex:0 0 auto;scroll-snap-align:center;border-radius:12px;overflow:hidden;width:320px;height:420px;"><img src="{img}" style="width:320px;height:420px;object-fit:cover;border-radius:12px;display:block;"></div>')
                         imgs_html = '<div style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:6px 0;">' + ''.join(imgs) + '</div>'
                         st.markdown(imgs_html, unsafe_allow_html=True)
                     else:
@@ -240,6 +430,9 @@ if role == "Tiffin Provider":
                 st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
+        render_top_rated_section()
+
+    with tab3:
         st.subheader("✏️ Edit Your Profile")
         col1, col2 = st.columns(2)
         with col1:
@@ -391,16 +584,17 @@ if role == "Tiffin Provider":
 elif role == "Student":
     st.markdown(f"### 🎓 Welcome, {user_data.get('name', 'Student')}!")
     
-    tab1, tab2 = st.tabs(["🔍 Find Tiffin", "👤 Profile"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Find Tiffin", "🏆 Top Rated", "👤 Profile"])
 
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
             selected_location = st.text_input("🔍 Search by Location", placeholder="e.g., Downtown")
             search_name = st.text_input("🔎 Search by Tiffin Name", key="stud_search_name", placeholder="e.g., Premium Lunch Box")
+           
         with col2:
             selected_food = st.selectbox("🍽 Food Preference", ["All", "Veg", "Non-Veg", "Both"])
-
+            max_monthly = st.number_input("Max Monthly Price ₹ (0 = no filter)", min_value=0, value=0, step=100, key="stud_max_monthly")
         tiffins = db.collection("tiffins").stream()
 
         for t in tiffins:
@@ -412,6 +606,14 @@ elif role == "Student":
                     continue
             if search_name and search_name.lower() not in data.get("name", "").lower():
                 continue
+            # filter by max monthly price if provided (>0)
+            if max_monthly and max_monthly > 0:
+                try:
+                    pm = float(data.get("price_monthly") or 0)
+                except Exception:
+                    pm = 0
+                if pm > float(max_monthly):
+                    continue
             if selected_food != "All" and data.get("food_type") != selected_food:
                 continue
 
@@ -420,13 +622,18 @@ elif role == "Student":
                 c1, c2 = st.columns([2, 3])
 
                 with c1:
-                    # Horizontal swipeable image carousel for students
+                    # Horizontal swipeable image carousel for students — one large image visible at a time
                     image_list = [img for img in data.get("image_urls", []) if img]
                     if image_list:
                         imgs = []
+                        # use a wide card so only one image fits the view at once; scroll-snap ensures centered snaps
                         for img in image_list:
-                            imgs.append(f'<div style="flex:0 0 auto;scroll-snap-align:center;border-radius:12px;overflow:hidden;height:220px;"><img src="{img}" style="height:220px;object-fit:cover;display:block;"></div>')
-                        imgs_html = '<div style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:6px 0;">' + ''.join(imgs) + '</div>'
+                            imgs.append(f'<div style="flex:0 0 640px; scroll-snap-align:center; border-radius:12px; overflow:hidden; width:640px; height:360px;"><img src="{img}" style="width:100%; height:100%; object-fit:cover; border-radius:12px; display:block;"/></div>')
+                        imgs_html = (
+                            '<div style="display:flex; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; padding:6px 0;">'
+                            + ''.join(imgs)
+                            + '</div>'
+                        )
                         st.markdown(imgs_html, unsafe_allow_html=True)
                     else:
                         st.write("No images")
@@ -461,7 +668,79 @@ elif role == "Student":
                     - Per Tiffin: ₹{data.get('price_per_tiffin', 0)}
                     """)
 
+                    # Aggregate existing reviews to show metrics above the rating input
                     col_review = st.columns(1)[0]
+
+                    # fetch reviews for this tiffin
+                    rev_docs = list(db.collection("reviews").where("tiffin_id", "==", t.id).stream())
+                    avg_user = 0.0
+                    avg_ai = 0.0
+                    ai_one_line = "No reviews yet. Be the first to review!"
+                    if rev_docs:
+                        ratings = []
+                        ai_scores = []
+                        texts = []
+                        for rr in rev_docs:
+                            rd = rr.to_dict() or {}
+                            if rd.get("rating") is not None:
+                                try:
+                                    ratings.append(float(rd.get("rating") or 0))
+                                except Exception:
+                                    pass
+                            if rd.get("ai_score") is not None:
+                                try:
+                                    ai_scores.append(float(rd.get("ai_score") or 0))
+                                except Exception:
+                                    pass
+                                # only use raw user review texts to build the summary context
+                                if rd.get("review"):
+                                    texts.append(str(rd.get("review")))
+
+                        if ratings:
+                            avg_user = sum(ratings) / len(ratings)
+                        if ai_scores:
+                            avg_ai = sum(ai_scores) / len(ai_scores)
+
+                        # build a short context from user review texts and ask AI to rewrite into 5-7 words
+                        context = " ".join(texts)
+                        if context:
+                            try:
+                                ai_one_line = generate_short_summary(context, min_words=5, max_words=15)
+                            except Exception:
+                                # fallback to first 15 words of context
+                                w = context.replace("\n", " ").split()
+                                ai_one_line = " ".join(w[:15]) if w else "No reviews yet."
+
+                    # color coding for AI score: >7 green, 4-7 yellow, <4.5 red
+                    try:
+                        aival = float(avg_ai)
+                    except Exception:
+                        aival = 0.0
+                    if aival > 7:
+                        ai_color = "#16a34a"  # green
+                    elif aival >= 4:
+                        ai_color = "#d97706"  # amber/yellow
+                    else:
+                        ai_color = "#dc2626"  # red
+
+                    # color coding for user avg: >3.5 green, 2.5-3.5 yellow, else red
+                    try:
+                        uval = float(avg_user)
+                    except Exception:
+                        uval = 0.0
+                    if uval > 3.5:
+                        user_color = "#16a34a"
+                    elif uval >= 2.5:
+                        user_color = "#d97706"
+                    else:
+                        user_color = "#dc2626"
+
+                    st.markdown(
+                        f"<p><strong>Avg user review:</strong> <span style='color:{user_color}; font-weight:600'>{avg_user:.1f}/5</span> • <strong>AI review:</strong> <span style='color:{ai_color}; font-weight:600'>{avg_ai:.1f}/10</span></p>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"*AI summary:* {ai_one_line}")
+
                     rating = st.slider("⭐ Rate (1–5)", 1, 5, key=f"rate_{t.id}")
                     review = st.text_area("💬 Write Review", key=f"rev_{t.id}", height=80)
                     if st.button("✅ Submit Review", key=f"btn_{t.id}", use_container_width=True):
@@ -506,83 +785,11 @@ elif role == "Student":
                             st.write("No reviews yet")
                 
                 st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("## 🏆 Top Rated Tiffins (AI Powered)")
-
-        # Build combined ranking using ai_score (0-10), user rating (1-5), and price (lower is better)
-        reviews = db.collection("reviews").stream()
-        stats = {}
-        for r in reviews:
-            d = r.to_dict()
-            tid = d.get("tiffin_id")
-            if tid not in stats:
-                stats[tid] = {"ai_scores": [], "ratings": [], "prices": []}
-            stats[tid]["ai_scores"].append(d.get("ai_score", 0) or 0)
-            stats[tid]["ratings"].append(d.get("rating", 0) or 0)
-            if d.get("price") is not None:
-                stats[tid]["prices"].append(d.get("price"))
-
-        if stats:
-            # gather price range
-            prices = []
-            for v in stats.values():
-                prices.extend(v.get("prices", []))
-            min_price = min(prices) if prices else 0
-            max_price = max(prices) if prices else 0
-
-            combined = []
-            for tid, v in stats.items():
-                avg_ai = (sum(v["ai_scores"]) / len(v["ai_scores"])) if v["ai_scores"] else 0.0
-                avg_rating = (sum(v["ratings"]) / len(v["ratings"])) if v["ratings"] else 0.0
-                # scale rating 1-5 to 0-10
-                rating_scaled = ((avg_rating - 1) / 4) * 10 if avg_rating else 0.0
-                # price score: lower price gets higher score
-                price_val = (sum(v["prices"]) / len(v["prices"])) if v["prices"] else None
-                if price_val is None or min_price == max_price:
-                    price_score = 5.0
-                else:
-                    price_score = ((max_price - price_val) / (max_price - min_price)) * 10
-
-                combined_score = 0.5 * avg_ai + 0.3 * rating_scaled + 0.2 * price_score
-                combined.append((tid, combined_score, avg_ai, avg_rating, price_val))
-
-            combined_sorted = sorted(combined, key=lambda x: x[1], reverse=True)
-            col1, col2, col3 = st.columns(3)
-            medals = ["🥇", "🥈", "🥉"]
-            for idx, (tid, score_val, ai_v, rat_v, p_v) in enumerate(combined_sorted[:3]):
-                tiffin_doc = db.collection("tiffins").document(tid).get()
-                if tiffin_doc.exists:
-                    tiffin = tiffin_doc.to_dict()
-
-                    # derive a one-line reason: prefer an AI summary from reviews or a short review excerpt
-                    reason = "Top choice based on combined AI score, user ratings and price."
-                    revs = db.collection("reviews").where("tiffin_id", "==", tid).stream()
-                    for rr in revs:
-                        rdata = rr.to_dict()
-                        if rdata.get("ai_summary"):
-                            reason = rdata.get("ai_summary")
-                            break
-                        if rdata.get("review"):
-                            txt = rdata.get("review").strip()
-                            if txt:
-                                reason = (txt[:120] + "...") if len(txt) > 120 else txt
-                                break
-
-                    with [col1, col2, col3][idx]:
-                        st.markdown(f"""
-                        <div class="metric-box">
-                            <h3>{medals[idx]} {tiffin.get('name', 'Unknown')}</h3>
-                            <p style="font-size: 18px; color: #FF6B35;">Combined Score: {score_val:.2f}/10</p>
-                            <p>AI Avg: {ai_v:.1f}/10 • Rating Avg: {rat_v:.1f}/5</p>
-                            <p>Price: ₹{p_v if p_v is not None else 'N/A'}</p>
-                            <p style="margin-top:6px; font-style:italic;">Why: {reason}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-        else:
-            st.info("No ratings yet. Be the first to review!")
     
     with tab2:
+        render_top_rated_section()
+
+    with tab3:
         st.subheader("✏️ Edit Your Profile")
         col1, col2 = st.columns(2)
         with col1:
