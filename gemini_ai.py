@@ -200,3 +200,153 @@ Reviews:
     if not raw_words:
         return "No reviews yet."
     return " ".join(raw_words[:max_words])
+
+
+def generate_pros_cons(context: str, max_items: int = 5) -> tuple[dict, dict]:
+    """Return (pros_by_category, cons_by_category) derived from the context.
+    Each return value is a dict mapping 4 categories to a list of short items.
+    Categories: Taste & Quality, Satisfaction, Delivery & Timeliness, Packaging & Value.
+    Prefer Gemini; fall back to keyword extraction per category.
+    """
+    categories = [
+        "Taste & Quality",
+        "Satisfaction",
+        "Delivery & Timeliness",
+        "Packaging & Value",
+    ]
+
+    empty_pros = {c: [] for c in categories}
+    empty_cons = {c: [] for c in categories}
+
+    if not context or not context.strip():
+        # provide an explicit no-reviews structure
+        for c in categories:
+            empty_pros[c] = ["No reviews yet."]
+            empty_cons[c] = ["No reviews yet."]
+        return empty_pros, empty_cons
+
+    prompt = f"""
+From the following user reviews, produce pros and cons grouped under these categories: {', '.join(categories)}.
+For each category produce up to {max_items} concise bullet items (start each item with '-' or '•').
+Keep items short (under 12 words). Output clearly labeled sections, for example:
+Pros - Taste & Quality:
+- ...
+Pros - Satisfaction:
+- ...
+Cons - Delivery & Timeliness:
+- ...
+
+Reviews:
+{context}
+"""
+
+    out = try_gemini(prompt)
+    if out:
+        pros = {c: [] for c in categories}
+        cons = {c: [] for c in categories}
+        lines = [l.rstrip() for l in out.splitlines()]
+        current_side = None
+        current_cat = None
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            low = line.lower()
+            # detect headers like 'pros - taste & quality:' or 'pros: taste & quality'
+            if low.startswith("pros") or low.startswith("cons"):
+                # determine side and optional category
+                side = "pros" if low.startswith("pros") else "cons"
+                # attempt to extract category name after '-' or ':'
+                if "-" in line:
+                    parts = line.split("-", 1)
+                    cat = parts[1].strip().rstrip(":").strip()
+                elif ":" in line:
+                    parts = line.split(":", 1)
+                    cat = parts[1].strip()
+                else:
+                    cat = None
+
+                # normalize category search
+                matched_cat = None
+                if cat:
+                    for c in categories:
+                        if cat.lower() in c.lower() or c.lower() in cat.lower():
+                            matched_cat = c
+                            break
+
+                current_side = side
+                current_cat = matched_cat
+                continue
+
+            # strip leading bullets
+            item = line.lstrip("-•* ").strip()
+            if not item:
+                continue
+
+            # If we have a current category, assign there; otherwise try to guess by keywords
+            target_cat = current_cat
+            if not target_cat:
+                # naive mapping by keywords
+                low_item = item.lower()
+                if any(k in low_item for k in ["taste", "spicy", "delicious", "fresh", "quality", "tasty", "homemade"]):
+                    target_cat = "Taste & Quality"
+                elif any(k in low_item for k in ["satisf", "portion", "quantity", "value", "price", "cost", "recommend"]):
+                    target_cat = "Satisfaction"
+                elif any(k in low_item for k in ["deliver", "late", "time", "delay", "pickup"]):
+                    target_cat = "Delivery & Timeliness"
+                else:
+                    target_cat = "Packaging & Value"
+
+            if current_side == "pros":
+                if len(pros[target_cat]) < max_items:
+                    pros[target_cat].append(item)
+            elif current_side == "cons":
+                if len(cons[target_cat]) < max_items:
+                    cons[target_cat].append(item)
+
+        # If any category empty in both pros/cons, leave empty lists for fallback to fill
+        return pros, cons
+
+    # Fallback extraction per category
+    text = context.lower()
+    # keyword banks per category
+    kp = {
+        "Taste & Quality": ["tasty", "delicious", "fresh", "spicy", "bland", "quality", "homemade", "roti", "curry"],
+        "Satisfaction": ["satisf", "recommend", "value", "portion", "quantity", "price", "worth"],
+        "Delivery & Timeliness": ["late", "delay", "deliver", "time", "pickup", "on time", "early"],
+        "Packaging & Value": ["packag", "hygien", "clean", "presentation", "container", "leak"]
+    }
+
+    pros = {c: [] for c in categories}
+    cons = {c: [] for c in categories}
+
+    # Find hits per category
+    for c in categories:
+        pos_hits = []
+        neg_hits = []
+        for k in kp[c]:
+            if k in text:
+                # classify as positive or negative by nearby sentiment words
+                # simple heuristic: check for negation words within 30 chars before keyword
+                idx = text.find(k)
+                snippet = text[max(0, idx-30): idx+len(k)+30]
+                if any(neg in snippet for neg in ["not ", "no ", "never", "n't", "poor", "bad", "worst"]):
+                    neg_hits.append(k)
+                else:
+                    pos_hits.append(k)
+
+        # create readable items
+        for p in pos_hits[:max_items]:
+            pros[c].append(p.replace("packag", "packaging").capitalize())
+        for n in neg_hits[:max_items]:
+            cons[c].append(n.replace("packag", "packaging").capitalize())
+
+    # ensure at least one item per category where nothing found
+    for c in categories:
+        if not pros[c]:
+            pros[c].append("No clear pros identified")
+        if not cons[c]:
+            cons[c].append("No clear cons identified")
+
+    return pros, cons
