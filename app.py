@@ -1,7 +1,9 @@
 import streamlit as st
+import pandas as pd
+import altair as alt
 from firebase_config import db
 from auth import register_user, login_user
-from gemini_ai import analyze_review, generate_one_line_reason, generate_short_summary
+from gemini_ai import analyze_review, generate_one_line_reason, generate_short_summary, generate_pros_cons
 
 # ================= PAGE CONFIG =================
 st.set_page_config(page_title="RIGHT TIFFIN FOR YOU", layout="wide", initial_sidebar_state="expanded")
@@ -345,7 +347,7 @@ def render_top_rated_section():
 if role == "Tiffin Provider":
     st.markdown(f"### 👨‍🍳 Welcome, {user_data.get('name', 'Provider')}!")
     
-    tab1, tab2, tab3 = st.tabs(["🔍 Browse Tiffins", "🏆 Top Rated", "👤 Profile"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Browse Tiffins", "📊 Dashboard", "🏆 Top Rated", "👤 Profile"])
 
     with tab1:
         col1, col2 = st.columns(2)
@@ -430,9 +432,159 @@ if role == "Tiffin Provider":
                 st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
+        # Business dashboard and performance analytics for the provider
+        st.markdown("## 📊 Business Dashboard & Performance Analytics")
+
+        # Fetch provider tiffins
+        t_docs = list(db.collection("tiffins").where("provider_id", "==", user_id).stream())
+        if not t_docs:
+            st.info("You haven't added any tiffins yet. Add tiffins to see analytics.")
+        else:
+            rows = []
+            total_reviews = 0
+            for t in t_docs:
+                td = t.to_dict() or {}
+                tid = t.id
+                # collect reviews for this tiffin
+                revs = list(db.collection("reviews").where("tiffin_id", "==", tid).stream())
+                total_reviews += len(revs)
+                ratings = []
+                ai_scores = []
+                texts = []
+                for r in revs:
+                    rd = r.to_dict() or {}
+                    try:
+                        if rd.get("rating") is not None:
+                            ratings.append(float(rd.get("rating")))
+                    except Exception:
+                        pass
+                    try:
+                        if rd.get("ai_score") is not None:
+                            ai_scores.append(float(rd.get("ai_score")))
+                    except Exception:
+                        pass
+                    if rd.get("review"):
+                        texts.append(str(rd.get("review")))
+
+                avg_rating = round((sum(ratings) / len(ratings)) if ratings else 0.0, 2)
+                avg_ai = round((sum(ai_scores) / len(ai_scores)) if ai_scores else 0.0, 2)
+                # pros/cons generation from raw user review texts
+                context = " ".join(texts).strip()
+                if context:
+                    try:
+                        pros, cons = generate_pros_cons(context)
+                    except Exception:
+                        pros, cons = ("Error generating pros", "Error generating cons")
+                else:
+                    pros, cons = ("No reviews yet.", "No reviews yet.")
+                rows.append({
+                    "tiffin_id": tid,
+                    "name": td.get("name", "Unnamed"),
+                    "food_type": td.get("food_type", "Unknown"),
+                    "price_monthly": float(td.get("price_monthly") or 0),
+                    "price_daily": float(td.get("price_daily") or 0),
+                    "price_per_tiffin": float(td.get("price_per_tiffin") or 0),
+                    "total_reviews": len(revs),
+                    "avg_rating": avg_rating,
+                    "avg_ai": avg_ai,
+                    "pros": pros,
+                    "cons": cons,
+                })
+
+            df = pd.DataFrame(rows)
+
+            # Top-level KPIs
+            colk1, colk2, colk3 = st.columns(3)
+            with colk1:
+                st.metric("Tiffins", len(df))
+            with colk2:
+                st.metric("Total Reviews", int(total_reviews))
+            with colk3:
+                overall_avg = round((df['avg_rating'].mean()) if not df['avg_rating'].empty else 0.0, 2)
+                st.metric("Avg Rating", f"{overall_avg}/5")
+
+            st.markdown("---")
+
+            # Layout charts and table
+            c1, c2 = st.columns([1, 1])
+
+            # Pie chart: food type distribution (by number of tiffins)
+            with c1:
+                ft_counts = df['food_type'].value_counts().reset_index()
+                ft_counts.columns = ['food_type', 'count']
+                if not ft_counts.empty:
+                    pie = alt.Chart(ft_counts).mark_arc().encode(
+                        theta=alt.Theta(field="count", type="quantitative"),
+                        color=alt.Color("food_type:N", legend=alt.Legend(title="Food Type")),
+                        tooltip=[alt.Tooltip('food_type:N'), alt.Tooltip('count:Q')]
+                    ).properties(width=380, height=320)
+                    st.altair_chart(pie)
+                else:
+                    st.write("No data for food type distribution")
+
+            # Bar chart: avg rating per tiffin
+            with c2:
+                if not df.empty:
+                    bar = alt.Chart(df).mark_bar().encode(
+                        x=alt.X('name:N', sort='-y', title='Tiffin'),
+                        y=alt.Y('avg_rating:Q', title='Avg Rating (1-5)'),
+                        color=alt.Color('avg_rating:Q', scale=alt.Scale(scheme='greens')),
+                        tooltip=['name', 'total_reviews', 'avg_rating', 'avg_ai']
+                    ).properties(width=520, height=320)
+                    st.altair_chart(bar)
+                else:
+                    st.write("No rating data yet")
+
+            st.markdown("---")
+
+            st.subheader("Per-Tiffin Performance")
+            display_df = df[['name', 'food_type', 'price_monthly', 'total_reviews', 'avg_rating', 'avg_ai']].rename(columns={
+                'name': 'Tiffin', 'food_type': 'Food Type', 'price_monthly': 'Monthly ₹', 'total_reviews': 'Reviews', 'avg_rating': 'Avg Rating', 'avg_ai': 'Avg AI (0-10)'
+            })
+            st.dataframe(display_df.sort_values(by='Reviews', ascending=False))
+
+            # Expandable pros/cons panels per tiffin
+            st.subheader("📋 Detailed Insights")
+            for _, row in df.iterrows():
+                tiffin_name = row['name']
+                pros_val = row.get('pros', [])
+                cons_val = row.get('cons', [])
+
+                with st.expander(f"🔍 {tiffin_name} - Pros & Cons"):
+                    col_pros, col_cons = st.columns(2)
+                    # Pros column
+                    with col_pros:
+                        st.markdown("**✅ Pros:**")
+                        # if pros_val is a dict of categories
+                        if isinstance(pros_val, dict):
+                            for cat, items in pros_val.items():
+                                st.markdown(f"**{cat}:**")
+                                for it in items:
+                                    st.markdown(f"• {it}")
+                        else:
+                            # list or single string
+                            pros_list = pros_val if isinstance(pros_val, list) else [pros_val]
+                            for pro in pros_list:
+                                st.markdown(f"• {pro}")
+
+                    # Cons column
+                    with col_cons:
+                        st.markdown("**⚠️ Cons:**")
+                        if isinstance(cons_val, dict):
+                            for cat, items in cons_val.items():
+                                st.markdown(f"**{cat}:**")
+                                for it in items:
+                                    st.markdown(f"• {it}")
+                        else:
+                            cons_list = cons_val if isinstance(cons_val, list) else [cons_val]
+                            for con in cons_list:
+                                st.markdown(f"• {con}")
+    # Provider Top Rated tab
+    with tab3:
         render_top_rated_section()
 
-    with tab3:
+    # Provider Profile tab
+    with tab4:
         st.subheader("✏️ Edit Your Profile")
         col1, col2 = st.columns(2)
         with col1:
@@ -447,8 +599,8 @@ if role == "Tiffin Provider":
             st.success("✅ Profile Updated!")
             st.rerun()
         
-        # Logout button inside Student profile to return to registration/login
-        if st.button("🔓 Logout", use_container_width=True, key="student_profile_logout"):
+        # Logout button inside Provider profile to return to registration/login
+        if st.button("🔓 Logout", use_container_width=True, key="provider_profile_logout"):
             # preserve theme and force_register flag so UI remains consistent
             st.session_state["force_register"] = True
             keep = {"theme", "force_register"}
@@ -584,7 +736,7 @@ if role == "Tiffin Provider":
 elif role == "Student":
     st.markdown(f"### 🎓 Welcome, {user_data.get('name', 'Student')}!")
     
-    tab1, tab2, tab3 = st.tabs(["🔍 Find Tiffin", "🏆 Top Rated", "👤 Profile"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Find Tiffin", "📊 Dashboard", "🏆 Top Rated", "👤 Profile"])
 
     with tab1:
         col1, col2 = st.columns(2)
