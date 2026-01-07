@@ -115,6 +115,7 @@ st.markdown('<div class="app-overlay">', unsafe_allow_html=True)
 st.markdown(
     '<div class="header-main">'
     '<h1>🍱 RIGHT TIFFIN FOR YOU</h1>'
+    '<h4>An AI-Powered Decision And Recommendation Engine</h4>'
     '<p style="font-size:18px; margin:6px 0 8px 0;">Find Your Perfect Meal Delivery</p>'
     '<p style="font-size:14px; margin:0; background: rgba(255,255,255,0.08); display:inline-block; padding:6px 10px; border-radius:8px;">Now only available in <strong>RGPV Campus</strong> and nearby areas</p>'
     '</div>',
@@ -129,7 +130,6 @@ if "role" not in st.session_state:
         <div style="background-image: url('https://images.unsplash.com/photo-1559056199-6415a6a2f3c2?auto=format&fit=crop&w=1350&q=80'); background-size:cover; background-position:center; border-radius:12px; padding:28px; color:white; text-align:center; box-shadow:0 6px 18px rgba(0,0,0,0.25); margin-bottom:18px;">
             <div style="background:rgba(0,0,0,0.38); padding:18px; border-radius:10px; display:inline-block; min-width:320px;">
                 <h2 style="margin:0 0 6px 0; font-weight:700;">🍱 RIGHT TIFFIN FOR YOU — Sign In / Register</h2>
-                <p style="margin:0; font-size:15px;">Fresh meals delivered with care. Now only available in <strong>RGPV Campus</strong> and nearby areas.</p>
             </div>
         </div>
         """,
@@ -939,9 +939,61 @@ elif role == "Student":
                 st.markdown('</div>', unsafe_allow_html=True)
     
     with tab2:
-        render_top_rated_section()
+        # Student Dashboard (simplified — no business analytics)
+        st.subheader("📊 Dashboard")
+        t_docs = list(db.collection("tiffins").stream())
+        if not t_docs:
+            st.info("No tiffins available right now.")
+        else:
+            total_tiffins = len(t_docs)
+            prices = []
+            for t in t_docs:
+                td = t.to_dict() or {}
+                try:
+                    p = float(td.get("price_monthly") or 0)
+                except Exception:
+                    p = 0
+                if p:
+                    prices.append(p)
+
+            avg_monthly = round(sum(prices) / len(prices), 2) if prices else 0.0
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Available Tiffins", total_tiffins)
+            with col2:
+                st.metric("Avg Monthly Price", f"₹{avg_monthly}")
+            with col3:
+                # show total reviews count across all tiffins
+                rev_count = len(list(db.collection("reviews").stream()))
+                st.metric("Total Reviews", rev_count)
+
+            st.markdown("---")
+            st.markdown("### 🔝 Top AI-rated Tiffins")
+            # compute avg ai per tiffin
+            ai_map = {}
+            for r in db.collection("reviews").stream():
+                rd = r.to_dict() or {}
+                tid = rd.get("tiffin_id")
+                if tid:
+                    ai_map.setdefault(tid, []).append(rd.get("ai_score", 0) or 0)
+
+            scored = []
+            for t in t_docs:
+                td = t.to_dict() or {}
+                tid = t.id
+                avg_ai = round(sum(ai_map.get(tid, [])) / len(ai_map.get(tid, [])), 1) if ai_map.get(tid) else 0.0
+                scored.append((tid, td.get("name", "Unknown"), avg_ai))
+
+            scored_sorted = sorted(scored, key=lambda x: x[2], reverse=True)[:5]
+            for tid, name, ai_score in scored_sorted:
+                st.write(f"**{name}** — AI Score: {ai_score}/10")
 
     with tab3:
+        # Top Rated (shared renderer)
+        render_top_rated_section()
+
+    with tab4:
         st.subheader("✏️ Edit Your Profile")
         col1, col2 = st.columns(2)
         with col1:
@@ -955,8 +1007,8 @@ elif role == "Student":
             user_ref.update({"name": new_name, "phone": new_phone, "location": new_location})
             st.success("✅ Profile Updated!")
             st.rerun()
-            # Logout button inside Student profile to return to registration/login
 
+        # Logout button inside Student profile to return to registration/login
         if st.button("🔓 Logout", use_container_width=True, key="student_profile_logout"):
             # preserve theme and force_register flag so UI remains consistent
             st.session_state["force_register"] = True
