@@ -3,8 +3,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Try Gemini safely (no hardcoding)
+
 def try_gemini(prompt: str):
+    """Try Gemini safely (no hardcoding)."""
     try:
         import google.generativeai as genai
 
@@ -23,58 +24,50 @@ def try_gemini(prompt: str):
 
 
 def fallback_ai(review_text: str, price: float | None = None):
+    """Fallback sentiment analysis using keyword matching."""
     text = review_text.lower()
 
-    # Strong positive signals (high impact)
     strong_positive = [
         "very tasty", "excellent", "awesome", "amazing", "delicious",
         "homemade", "fresh", "healthy", "perfect", "best", "love it",
         "superb", "mouth watering"
     ]
 
-    # Mild positive signals (low impact)
     mild_positive = [
         "good", "nice", "okay", "decent", "fine", "satisfactory",
         "soft roti", "good taste", "less oil", "balanced spice",
         "clean", "hygienic", "good quantity", "value for money"
     ]
 
-    # Strong negative signals (high impact)
     strong_negative = [
         "worst", "very bad", "pathetic", "disgusting", "spoiled",
         "smelly", "stale", "raw", "uncooked", "food poisoning"
     ]
 
-    # Mild negative signals (low impact)
     mild_negative = [
         "bad", "average", "oily", "too spicy", "bland", "cold food",
         "late", "delayed", "small quantity", "overpriced",
         "not fresh", "sometimes late", "inconsistent"
     ]
 
-    score = 5  # neutral baseline
+    score = 5
 
-    # Apply strong positives
     for w in strong_positive:
         if w in text:
             score += 2
 
-    # Apply mild positives
     for w in mild_positive:
         if w in text:
             score += 1
 
-    # Apply strong negatives
     for w in strong_negative:
         if w in text:
             score -= 2
 
-    # Apply mild negatives
     for w in mild_negative:
         if w in text:
             score -= 1
 
-    # 🔹 Price perception logic (value-for-money bias)
     if price is not None:
         try:
             p = float(price)
@@ -87,13 +80,13 @@ def fallback_ai(review_text: str, price: float | None = None):
         except Exception:
             pass
 
-    # Clamp score to 0–10
     score = max(0, min(score, 10))
 
     return score, "Rule-based review sentiment analysis (fallback)"
 
 
 def analyze_review(review_text: str, price: float | None = None):
+    """Analyze a review and return score and summary."""
     if not review_text.strip():
         return 0, "No review provided"
 
@@ -118,7 +111,7 @@ Price: {price if price is not None else 'N/A'}
 
         for line in gemini_output.splitlines():
             if line.lower().startswith("score"):
-                digits = "".join(filter(lambda c: c.isdigit() or c==".", line))
+                digits = "".join(filter(lambda c: c.isdigit() or c == ".", line))
                 try:
                     if digits:
                         score = float(digits)
@@ -130,7 +123,6 @@ Price: {price if price is not None else 'N/A'}
                     summary = parts[1].strip()
 
         if score is not None:
-            # normalize to 0-10 and round
             try:
                 score_val = float(score)
                 score_val = max(0.0, min(score_val, 10.0))
@@ -138,12 +130,11 @@ Price: {price if price is not None else 'N/A'}
             except Exception:
                 pass
 
-    # 🔁 Fallback (guaranteed)
     return fallback_ai(review_text, price)
 
 
 def generate_one_line_reason(context: str) -> str:
-    """Return a concise one-line reason (prefer AI via Gemini, otherwise fallback to trimmed context)."""
+    """Return a concise one-line reason."""
     if not context or not context.strip():
         return "Recommended based on reviews and ratings."
 
@@ -156,21 +147,17 @@ Context:
 
     out = try_gemini(prompt)
     if out:
-        # take the first non-empty line
         for line in out.splitlines():
             line = line.strip()
             if line:
                 return line if len(line) <= 220 else line[:217] + "..."
 
-    # fallback: return a trimmed version of the context
     txt = context.strip().replace("\n", " ")
     return (txt[:217] + "...") if len(txt) > 220 else txt
 
 
 def generate_short_summary(context: str, min_words: int = 5, max_words: int = 7) -> str:
-    """Generate a very short summary (preferably between min_words and max_words).
-    Uses Gemini when available; falls back to taking the first max_words from the context.
-    """
+    """Generate a very short summary."""
     if not context or not context.strip():
         return "No reviews yet."
 
@@ -192,161 +179,217 @@ Reviews:
                 return line
             if len(words) > max_words:
                 return " ".join(words[:max_words])
-            # if shorter than min_words, still return it (it's better than nothing)
             return line
 
-    # fallback: take first max_words from the raw context
     raw_words = context.replace("\n", " ").split()
     if not raw_words:
         return "No reviews yet."
     return " ".join(raw_words[:max_words])
 
 
-def generate_pros_cons(context: str, max_items: int = 5) -> tuple[dict, dict]:
-    """Return (pros_by_category, cons_by_category) derived from the context.
-    Each return value is a dict mapping 4 categories to a list of short items.
-    Categories: Taste & Quality, Satisfaction, Delivery & Timeliness, Packaging & Value.
-    Prefer Gemini; fall back to keyword extraction per category.
+def generate_pros_cons_simple(context: str, max_pros: int = 5, max_cons: int = 5) -> tuple:
     """
-    categories = [
-        "Taste & Quality",
-        "Satisfaction",
-        "Delivery & Timeliness",
-        "Packaging & Value",
-    ]
-
-    empty_pros = {c: [] for c in categories}
-    empty_cons = {c: [] for c in categories}
-
+    Generate simple pros and cons lists from reviews.
+    Returns: (pros_list, cons_list, improvement_suggestion)
+    """
     if not context or not context.strip():
-        # provide an explicit no-reviews structure
-        for c in categories:
-            empty_pros[c] = ["No reviews yet."]
-            empty_cons[c] = ["No reviews yet."]
-        return empty_pros, empty_cons
+        return (
+            ["No reviews available yet."],
+            ["No reviews available yet."],
+            "Collect more student reviews to get actionable insights."
+        )
 
     prompt = f"""
-From the following user reviews, produce pros and cons grouped under these categories: {', '.join(categories)}.
-For each category produce up to {max_items} concise bullet items (start each item with '-' or '•').
-Keep items short (under 12 words). Output clearly labeled sections, for example:
-Pros - Taste & Quality:
-- ...
-Pros - Satisfaction:
-- ...
-Cons - Delivery & Timeliness:
-- ...
+Analyze these student reviews about a tiffin service and extract:
+
+1. PROS: List {max_pros} positive points students mentioned (things they liked)
+2. CONS: List {max_cons} negative points or complaints students mentioned
+3. SUGGESTION: One short actionable suggestion for improvement (1-2 sentences)
+
+Format your response EXACTLY like this:
+PROS:
+- [positive point 1]
+- [positive point 2]
+...
+
+CONS:
+- [negative point 1]
+- [negative point 2]
+...
+
+SUGGESTION:
+[Your improvement suggestion here]
 
 Reviews:
-{context}
+{context[:1500]}
 """
 
     out = try_gemini(prompt)
+    
+    pros = []
+    cons = []
+    suggestion = "Focus on maintaining food quality and timely delivery based on student feedback."
+    
     if out:
-        pros = {c: [] for c in categories}
-        cons = {c: [] for c in categories}
-        lines = [l.rstrip() for l in out.splitlines()]
-        current_side = None
-        current_cat = None
-
-        for raw in lines:
-            line = raw.strip()
+        current_section = None
+        suggestion_lines = []
+        
+        for line in out.splitlines():
+            line = line.strip()
             if not line:
                 continue
+            
             low = line.lower()
-            # detect headers like 'pros - taste & quality:' or 'pros: taste & quality'
-            if low.startswith("pros") or low.startswith("cons"):
-                # determine side and optional category
-                side = "pros" if low.startswith("pros") else "cons"
-                # attempt to extract category name after '-' or ':'
-                if "-" in line:
-                    parts = line.split("-", 1)
-                    cat = parts[1].strip().rstrip(":").strip()
-                elif ":" in line:
-                    parts = line.split(":", 1)
-                    cat = parts[1].strip()
-                else:
-                    cat = None
-
-                # normalize category search
-                matched_cat = None
-                if cat:
-                    for c in categories:
-                        if cat.lower() in c.lower() or c.lower() in cat.lower():
-                            matched_cat = c
-                            break
-
-                current_side = side
-                current_cat = matched_cat
+            
+            if low.startswith("pros"):
+                current_section = "pros"
                 continue
-
-            # strip leading bullets
-            item = line.lstrip("-•* ").strip()
+            elif low.startswith("cons"):
+                current_section = "cons"
+                continue
+            elif low.startswith("suggestion"):
+                current_section = "suggestion"
+                # Check if suggestion is on the same line
+                if ":" in line:
+                    rest = line.split(":", 1)[1].strip()
+                    if rest:
+                        suggestion_lines.append(rest)
+                continue
+            
+            # Process items
+            item = line.lstrip("-•*123456789.) ").strip()
             if not item:
                 continue
+            
+            if current_section == "pros" and len(pros) < max_pros:
+                pros.append(item)
+            elif current_section == "cons" and len(cons) < max_cons:
+                cons.append(item)
+            elif current_section == "suggestion":
+                suggestion_lines.append(item)
+        
+        if suggestion_lines:
+            suggestion = " ".join(suggestion_lines)[:300]
+    
+    # Fallback extraction if AI didn't return proper format
+    if not pros or not cons:
+        pros, cons, suggestion = fallback_pros_cons(context, max_pros, max_cons)
+    
+    # Ensure at least one item in each list
+    if not pros:
+        pros = ["Students generally find the food acceptable."]
+    if not cons:
+        cons = ["No major complaints reported yet."]
+    
+    return pros, cons, suggestion
 
-            # If we have a current category, assign there; otherwise try to guess by keywords
-            target_cat = current_cat
-            if not target_cat:
-                # naive mapping by keywords
-                low_item = item.lower()
-                if any(k in low_item for k in ["taste", "spicy", "delicious", "fresh", "quality", "tasty", "homemade"]):
-                    target_cat = "Taste & Quality"
-                elif any(k in low_item for k in ["satisf", "portion", "quantity", "value", "price", "cost", "recommend"]):
-                    target_cat = "Satisfaction"
-                elif any(k in low_item for k in ["deliver", "late", "time", "delay", "pickup"]):
-                    target_cat = "Delivery & Timeliness"
-                else:
-                    target_cat = "Packaging & Value"
 
-            if current_side == "pros":
-                if len(pros[target_cat]) < max_items:
-                    pros[target_cat].append(item)
-            elif current_side == "cons":
-                if len(cons[target_cat]) < max_items:
-                    cons[target_cat].append(item)
-
-        # If any category empty in both pros/cons, leave empty lists for fallback to fill
-        return pros, cons
-
-    # Fallback extraction per category
+def fallback_pros_cons(context: str, max_pros: int = 5, max_cons: int = 5) -> tuple:
+    """Fallback keyword-based extraction for pros and cons."""
     text = context.lower()
-    # keyword banks per category
-    kp = {
-        "Taste & Quality": ["tasty", "delicious", "fresh", "spicy", "bland", "quality", "homemade", "roti", "curry"],
-        "Satisfaction": ["satisf", "recommend", "value", "portion", "quantity", "price", "worth"],
-        "Delivery & Timeliness": ["late", "delay", "deliver", "time", "pickup", "on time", "early"],
-        "Packaging & Value": ["packag", "hygien", "clean", "presentation", "container", "leak"]
+    
+    positive_keywords = {
+        "tasty": "Food is tasty and flavorful",
+        "delicious": "Delicious meals appreciated by students",
+        "fresh": "Fresh ingredients used",
+        "homemade": "Homemade taste that students love",
+        "good quality": "Good quality food",
+        "clean": "Clean and hygienic preparation",
+        "on time": "Timely delivery",
+        "generous portion": "Generous portion sizes",
+        "value for money": "Good value for money",
+        "soft roti": "Soft and fresh rotis",
+        "variety": "Good variety in menu",
+        "healthy": "Healthy food options",
+        "affordable": "Affordable pricing",
+        "hot food": "Food served hot",
+        "good taste": "Good taste overall"
     }
+    
+    negative_keywords = {
+        "late": "Sometimes late delivery",
+        "cold": "Food sometimes arrives cold",
+        "oily": "Food can be oily",
+        "spicy": "Sometimes too spicy",
+        "bland": "Food can be bland at times",
+        "small portion": "Portion sizes could be bigger",
+        "expensive": "Pricing could be better",
+        "inconsistent": "Inconsistent quality",
+        "stale": "Freshness could improve",
+        "delay": "Delivery delays reported",
+        "less quantity": "Quantity could be more",
+        "not fresh": "Freshness concerns",
+        "overpriced": "Feels overpriced to some",
+        "packaging": "Packaging needs improvement",
+        "average": "Average quality"
+    }
+    
+    pros = []
+    cons = []
+    
+    for keyword, description in positive_keywords.items():
+        if keyword in text and len(pros) < max_pros:
+            # Check it's not negated
+            idx = text.find(keyword)
+            snippet = text[max(0, idx-20):idx]
+            if not any(neg in snippet for neg in ["not ", "no ", "don't", "doesn't", "wasn't", "isn't"]):
+                pros.append(description)
+    
+    for keyword, description in negative_keywords.items():
+        if keyword in text and len(cons) < max_cons:
+            cons.append(description)
+    
+    if not pros:
+        pros = ["Food quality is generally acceptable"]
+    if not cons:
+        cons = ["No specific complaints identified"]
+    
+    # Generate suggestion based on cons
+    if cons and cons[0] != "No specific complaints identified":
+        suggestion = f"Consider addressing: {cons[0].lower()}. Regular feedback collection can help improve service."
+    else:
+        suggestion = "Continue maintaining current standards and collect more student feedback for improvements."
+    
+    return pros[:max_pros], cons[:max_cons], suggestion
 
-    pros = {c: [] for c in categories}
-    cons = {c: [] for c in categories}
 
-    # Find hits per category
-    for c in categories:
-        pos_hits = []
-        neg_hits = []
-        for k in kp[c]:
-            if k in text:
-                # classify as positive or negative by nearby sentiment words
-                # simple heuristic: check for negation words within 30 chars before keyword
-                idx = text.find(k)
-                snippet = text[max(0, idx-30): idx+len(k)+30]
-                if any(neg in snippet for neg in ["not ", "no ", "never", "n't", "poor", "bad", "worst"]):
-                    neg_hits.append(k)
-                else:
-                    pos_hits.append(k)
-
-        # create readable items
-        for p in pos_hits[:max_items]:
-            pros[c].append(p.replace("packag", "packaging").capitalize())
-        for n in neg_hits[:max_items]:
-            cons[c].append(n.replace("packag", "packaging").capitalize())
-
-    # ensure at least one item per category where nothing found
-    for c in categories:
-        if not pros[c]:
-            pros[c].append("No clear pros identified")
-        if not cons[c]:
-            cons[c].append("No clear cons identified")
-
+def generate_pros_cons(context: str, max_items: int = 5) -> tuple:
+    """
+    Legacy function for backward compatibility.
+    Returns (pros_list, cons_list) - simplified version.
+    """
+    pros, cons, _ = generate_pros_cons_simple(context, max_items, max_items)
     return pros, cons
+
+
+def generate_improvement_suggestion(context: str) -> str:
+    """Generate a short improvement suggestion based on reviews."""
+    if not context or not context.strip():
+        return "Collect more student reviews to identify areas for improvement."
+    
+    prompt = f"""
+Based on these student reviews, provide ONE short, actionable suggestion (1-2 sentences) for how this tiffin service can improve:
+
+Reviews:
+{context[:1000]}
+
+Suggestion:
+"""
+    
+    out = try_gemini(prompt)
+    if out:
+        # Clean up the response
+        suggestion = out.strip()
+        # Remove any "Suggestion:" prefix if present
+        if suggestion.lower().startswith("suggestion"):
+            parts = suggestion.split(":", 1)
+            if len(parts) > 1:
+                suggestion = parts[1].strip()
+        
+        # Limit length
+        if len(suggestion) > 300:
+            suggestion = suggestion[:297] + "..."
+        
+        return suggestion
+    
+    return "Focus on consistency in food quality and timely delivery to improve student satisfaction."
