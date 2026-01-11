@@ -3,18 +3,20 @@ import pandas as pd
 import altair as alt
 from firebase_config import db
 from auth import register_user, login_user
-from gemini_ai import analyze_review, generate_one_line_reason, generate_short_summary, generate_pros_cons
+from gemini_ai import (
+    analyze_review, 
+    generate_one_line_reason, 
+    generate_short_summary, 
+    generate_pros_cons_simple
+)
 
 # ================= PAGE CONFIG =================
 st.set_page_config(page_title="RIGHT TIFFIN FOR YOU", layout="wide", initial_sidebar_state="expanded")
 
 # ================= THEME (light/dark) and CUSTOM CSS =================
-# Initialize theme state
 if "theme" not in st.session_state:
     st.session_state["theme"] = "light"
 
-
-# Build CSS based on theme
 if st.session_state.get("theme", "light") == "light":
     bg_image = "https://images.unsplash.com/photo-1604908177522-2d5a6b3b0c4d?auto=format&fit=crop&w=1600&q=80"
     overlay_bg = "rgba(255,255,255,0.92)"
@@ -81,11 +83,13 @@ css = f"""
     }}
 
     .metric-box {{
-        background: rgba(0,0,0);
+        background: rgba(255,255,255,0.95);
         padding: 14px;
         border-radius: 10px;
         border-left: 4px solid #FF6B35;
         box-shadow: 0 6px 18px rgba(0,0,0,0.04);
+        min-height: 200px;
+        
     }}
 
     .block-container {{
@@ -102,20 +106,45 @@ css = f"""
     }}
 
     .stMarkdown div[style*="scroll-snap-type"] img {{ border-radius: 10px; }}
-    /* small floating theme badge */
     .theme-badge {{ position: fixed; left: 12px; top: 8px; z-index: 9999; }}
+    
+    .pros-item {{
+        background: linear-gradient(90deg, #f0fdf4, #dcfce7);
+        padding: 8px 12px;
+        border-radius: 8px;
+        margin: 4px 0;
+        border-left: 3px solid #22c55e;
+        font-weight: 500;
+        color: #166534;
+    }}
+    
+    .cons-item {{
+        background: linear-gradient(90deg, #fef2f2, #fee2e2);
+        padding: 8px 12px;
+        border-radius: 8px;
+        margin: 4px 0;
+        border-left: 3px solid #ef4444;
+        font-weight: 500;
+        color: #991b1b;
+    }}
+    
+    .suggestion-box {{
+        background: linear-gradient(135deg, #eff6ff, #dbeafe);
+        padding: 16px;
+        border-radius: 10px;
+        border-left: 4px solid #3b82f6;
+        margin-top: 12px;
+    }}
 </style>
 """
 
 st.markdown(css, unsafe_allow_html=True)
 
-# wrap main content in a light overlay so background image shows through around cards
 st.markdown('<div class="app-overlay">', unsafe_allow_html=True)
 
 st.markdown(
     '<div class="header-main">'
     '<h1>🍱 RIGHT TIFFIN FOR YOU</h1>'
-    '<h4>An AI-Powered Decision And Recommendation Engine</h4>'
     '<p style="font-size:18px; margin:6px 0 8px 0;">Find Your Perfect Meal Delivery</p>'
     '<p style="font-size:14px; margin:0; background: rgba(255,255,255,0.08); display:inline-block; padding:6px 10px; border-radius:8px;">Now only available in <strong>RGPV Campus</strong> and nearby areas</p>'
     '</div>',
@@ -124,12 +153,12 @@ st.markdown(
 
 # ================= AUTH =================
 if "role" not in st.session_state:
-    # Attractive banner for auth page with background image and availability note
     st.markdown(
         """
         <div style="background-image: url('https://images.unsplash.com/photo-1559056199-6415a6a2f3c2?auto=format&fit=crop&w=1350&q=80'); background-size:cover; background-position:center; border-radius:12px; padding:28px; color:white; text-align:center; box-shadow:0 6px 18px rgba(0,0,0,0.25); margin-bottom:18px;">
             <div style="background:rgba(0,0,0,0.38); padding:18px; border-radius:10px; display:inline-block; min-width:320px;">
                 <h2 style="margin:0 0 6px 0; font-weight:700;">🍱 RIGHT TIFFIN FOR YOU — Sign In / Register</h2>
+                <p style="margin:0; font-size:15px;">Fresh meals delivered with care. Now only available in <strong>RGPV Campus</strong> and nearby areas.</p>
             </div>
         </div>
         """,
@@ -154,6 +183,98 @@ user_snap = user_ref.get()
 user_data = user_snap.to_dict() if user_snap.exists else {}
 
 
+def generate_category_positive_summary(category_key, tiffin_name, reviews_text, monthly_price, avg_rating, avg_ai):
+    """
+    Generate a positive one-line summary for a specific category based on student reviews using Gemini AI.
+    """
+    if not reviews_text or not reviews_text.strip():
+        return None
+    
+    # Limit review text to prevent token overflow
+    limited_reviews = reviews_text[:800] if len(reviews_text) > 800 else reviews_text
+    
+    # Category-specific prompts
+    category_prompts = {
+        "budget": f"""Based on these student reviews about '{tiffin_name}' (Monthly price: ₹{monthly_price}:
+Reviews: "{limited_reviews}"
+
+Write ONE enthusiastic positive sentence (10-15 words max) explaining why students find this the BEST BUDGET-FRIENDLY tiffin. Focus on value for money and affordability.""",
+        
+        "taste": f"""Based on these student reviews about '{tiffin_name}' :
+Reviews: "{limited_reviews}"
+
+Write ONE enthusiastic positive sentence (10-15 words max) explaining why students say this has the BEST TASTE. Focus on deliciousness and food quality.""",
+        
+        "overall": f"""Based on these student reviews about '{tiffin_name}' :
+Reviews: "{limited_reviews}"
+
+Write ONE enthusiastic positive sentence (10-15 words max) explaining why students rate this as the BEST OVERALL tiffin. Consider taste, service, and value.""",
+        
+        "veg": f"""Based on these student reviews about '{tiffin_name}' :
+Reviews: "{limited_reviews}"
+
+Write ONE enthusiastic positive sentence (10-15 words max) explaining why students love this as the BEST VEGETARIAN option. Focus on veg food quality and variety.""",
+        
+        "nonveg": f"""Based on these student reviews about '{tiffin_name}' :
+Reviews: "{limited_reviews}"
+
+Write ONE enthusiastic positive sentence (10-15 words max) explaining why students love this as the BEST NON-VEG option. Focus on meat quality and flavors."""
+    }
+    
+    prompt = category_prompts.get(category_key, category_prompts["overall"])
+    
+    full_prompt = f"""{prompt}
+
+RULES:
+1. Write ONLY one positive sentence
+2. Maximum 15 words
+3. Be enthusiastic and student-friendly
+4. NO negative points
+5. Start directly with the praise (don't say "Based on reviews...")
+6. Use emojis sparingly if appropriate
+
+Examples of good responses:
+- "Amazing homestyle taste at pocket-friendly prices students absolutely love!"
+- "Delicious fresh meals with generous portions that keep students coming back!"
+- "Perfect blend of taste, quantity and timely delivery every single day!"
+"""
+    
+    try:
+        # Use the existing generate_one_line_reason function
+        result = generate_one_line_reason(full_prompt)
+        if result and len(result.strip()) > 5:
+            # Clean up the result
+            cleaned = result.strip().strip('"\'')
+            # Ensure not too long
+            words = cleaned.split()
+            if len(words) > 18:
+                cleaned = ' '.join(words[:16]) + '...'
+            return cleaned
+    except Exception as e:
+        pass
+    
+    return None
+
+
+def get_default_category_summary(category_key, entry):
+    """Return a default positive summary if AI generation fails."""
+    if not entry:
+        return "No eligible tiffin found for this category."
+    
+    name = entry.get("name", "This tiffin")
+    avg_rating = entry.get("avg_rating", 0)
+    monthly = entry.get("monthly", "N/A")
+    
+    defaults = {
+        "budget": f"Amazing value at ₹{monthly}/month - students love the quality!",
+        "taste": f"Delicious homestyle cooking that students absolutely rave about!",
+        "overall": f"Top-rated for taste, service & value - a student favorite!",
+        "veg": f"Fresh, tasty vegetarian meals that students highly recommend!",
+        "nonveg": f"Authentic non-veg flavors that students can't stop praising!"
+    }
+    return defaults.get(category_key, "Highly recommended by students!")
+
+
 def render_top_rated_section():
     """Render the Top Rated Tiffins (AI Powered) section. Reusable for both Student and Provider tabs."""
     st.markdown("---")
@@ -162,15 +283,21 @@ def render_top_rated_section():
     # Build combined ranking using ai_score (0-10), user rating (1-5), and price (lower is better)
     reviews = db.collection("reviews").stream()
     stats = {}
+    review_texts = {}  # Store review texts for AI summary generation
+    
     for r in reviews:
         d = r.to_dict()
         tid = d.get("tiffin_id")
         if tid not in stats:
             stats[tid] = {"ai_scores": [], "ratings": [], "prices": []}
+            review_texts[tid] = []
         stats[tid]["ai_scores"].append(d.get("ai_score", 0) or 0)
         stats[tid]["ratings"].append(d.get("rating", 0) or 0)
         if d.get("price") is not None:
             stats[tid]["prices"].append(d.get("price"))
+        # Collect review texts for AI summary
+        if d.get("review"):
+            review_texts[tid].append(str(d.get("review")))
 
     if stats:
         # gather price range
@@ -217,20 +344,8 @@ def render_top_rated_section():
                 "price": price_val,
                 "monthly": monthly,
                 "food_type": food_type,
+                "reviews": review_texts.get(tid, []),  # Add review texts
             })
-
-        # Helper to derive a reason (prefer AI summary or short review excerpt)
-        def derive_reason(tid, fallback_text):
-            revs = db.collection("reviews").where("tiffin_id", "==", tid).stream()
-            for rr in revs:
-                rdata = rr.to_dict()
-                if rdata.get("ai_summary"):
-                    return rdata.get("ai_summary")
-                if rdata.get("review"):
-                    txt = rdata.get("review").strip()
-                    if txt:
-                        return (txt[:120] + "...") if len(txt) > 120 else txt
-            return fallback_text
 
         # Compute winners for each category
         winner = {"budget": None, "taste": None, "overall": None, "veg": None, "nonveg": None}
@@ -269,7 +384,7 @@ def render_top_rated_section():
         winner["overall"] = max(entries, key=lambda x: x["combined"]) if entries else None
 
         # Best Veg / Jain
-        veg_entries = [e for e in entries if "veg" in (e.get("food_type") or "")]
+        veg_entries = [e for e in entries if "veg" in (e.get("food_type") or "") and "non" not in (e.get("food_type") or "")]
         winner["veg"] = max(veg_entries, key=lambda x: x["combined"]) if veg_entries else None
 
         # Best Non-Veg
@@ -277,31 +392,35 @@ def render_top_rated_section():
         winner["nonveg"] = max(nonveg_entries, key=lambda x: x["combined"]) if nonveg_entries else None
 
         # Render the five recommendation boxes
-        labels = [("💰 Best Budget", "budget"), ("😋 Best Taste", "taste"), ("⭐ Best Overall", "overall"), ("🥬 Best Veg / Jain", "veg"), ("🍗 Best Non-Veg", "nonveg")]
+        labels = [
+            ("💰 Best Budget", "budget"), 
+            ("😋 Best Taste", "taste"), 
+            ("⭐ Best Overall", "overall"), 
+            ("🥬 Best Veg / Jain", "veg"), 
+            ("🍗 Best Non-Veg", "nonveg")
+        ]
 
         cols5 = st.columns(5)
         for i, (label_text, key_cat) in enumerate(labels):
             e = winner.get(key_cat)
             with cols5[i]:
                 if not e:
-                    st.info(f"{label_text}\nNo eligible tiffin")
+                    st.markdown(f"""
+                    <div class="metric-box" style="text-align:center; display:flex; flex-direction:column; justify-content:center;">
+                        <h4 style="margin:0 0 8px 0; color:#FF6B35; font-size:20px; font-weight:700;">{label_text}</h4>
+                        <p style="color:#888;">No eligible tiffin found</p>
+                    </div>
+                    """, unsafe_allow_html=True)
                     continue
-                # craft reason
+                
                 # compute displayed metrics
                 avg_user = e.get('avg_rating', 0.0)
                 avg_ai = e.get('avg_ai', 0.0)
                 overall = e.get('combined', 0.0)
-
-                if key_cat == "budget":
-                    reason_fallback = f"Low price • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
-                elif key_cat == "taste":
-                    reason_fallback = f"High AI taste score {avg_ai:.1f}/10 • Avg user {avg_user:.1f}/5"
-                elif key_cat == "overall":
-                    reason_fallback = f"Overall score {overall:.2f}/10 • AI {avg_ai:.1f}/10 • User {avg_user:.1f}/5"
-                elif key_cat == "veg":
-                    reason_fallback = f"Vegetarian • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
-                else:
-                    reason_fallback = f"Non-veg • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10"
+                monthly_price = e.get('monthly', 'N/A')
+                
+                # Combine all reviews for this tiffin
+                all_reviews = " ".join(e.get("reviews", []))
 
                 # color coding for AI score: >7 green, 4-7 yellow, <4.5 red
                 try:
@@ -327,17 +446,33 @@ def render_top_rated_section():
                 else:
                     user_color = "#dc2626"
 
-                # ask AI to produce a single-line reason (fallback to a clear budget message)
-                ai_reason = generate_one_line_reason(f"{label_text} candidate: {e['name']}. {reason_fallback}. Monthly price: {e.get('monthly', 'N/A')}.")
-                if key_cat == "budget":
-                    ai_reason = ai_reason or "It's the top budget choice, offering a low monthly price."
+                # Generate AI-powered category-specific summary from student reviews
+                ai_positive_summary = generate_category_positive_summary(
+                    key_cat, 
+                    e.get("name", "Unknown"),
+                    all_reviews,
+                    monthly_price,
+                    avg_user,
+                    avg_ai
+                )
+                
+                # Fallback to default if AI fails
+                if not ai_positive_summary:
+                    ai_positive_summary = get_default_category_summary(key_cat, e)
 
                 st.markdown(f"""
                 <div class="metric-box">
-                    <h3>{label_text} - {e['name']}</h3>
-                    <p style="font-size:14px;">Avg user rating: <span style='color:{user_color}; font-weight:600'>{avg_user:.1f}/5</span> • AI rating: <span style='color:{ai_color}; font-weight:600'>{avg_ai:.1f}/10</span> • Overall: {overall:.2f}/10</p>
-                    <p style="font-size: 16px; color: #FF6B35;">Low price • Avg user {avg_user:.1f}/5 • AI {avg_ai:.1f}/10</p>
-                    <p style="margin-top:6px; font-style:italic;">Why: {ai_reason}</p>
+                    <h4 style="margin:0 0 8px 0; color:#FF6B35; font-size:20px; font-weight:700; line-height:1.2;">{label_text}</h4>
+                    <h3 style="margin:0 0 10px 0; font-size:18px; color:#222; font-weight:600;">{e['name']}</h3>
+                    <p style="font-size:14px; margin:6px 0; color:#555;">
+                        ⭐ <span style='color:{user_color}; font-weight:600'>{avg_user:.1f}/5</span> | 
+                        🤖 <span style='color:{ai_color}; font-weight:600'>{avg_ai:.1f}/10</span>
+                    </p>
+                    <p style="font-size:14px; margin:6px 0; color:#555;">💰 ₹{monthly_price}/month</p>
+                    <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+                    <p style="font-size:15px; color:#16a34a; font-weight:500; margin:0; line-height:1.5;">
+                        ✨ {ai_positive_summary}
+                    </p>
                 </div>
                 """, unsafe_allow_html=True)
     else:
@@ -376,7 +511,6 @@ if role == "Tiffin Provider":
                 c1, c2 = st.columns([2, 3])
 
                 with c1:
-                    # Display images in a horizontal, swipeable container (works with mouse drag and touch swipe)
                     image_list = [img for img in data.get("image_urls", []) if img]
                     if image_list:
                         imgs = []
@@ -389,7 +523,6 @@ if role == "Tiffin Provider":
 
                 with c2:
                     st.markdown(f"### {data.get('name', 'Unknown Tiffin')}")
-                    # show short description if available
                     desc = data.get('description', '')
                     if desc:
                         short_desc = desc if len(desc.split()) <= 50 else ' '.join(desc.split()[:50]) + '...'
@@ -432,10 +565,8 @@ if role == "Tiffin Provider":
                 st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
-        # Business dashboard and performance analytics for the provider
         st.markdown("## 📊 Business Dashboard & Performance Analytics")
 
-        # Fetch provider tiffins
         t_docs = list(db.collection("tiffins").where("provider_id", "==", user_id).stream())
         if not t_docs:
             st.info("You haven't added any tiffins yet. Add tiffins to see analytics.")
@@ -445,7 +576,6 @@ if role == "Tiffin Provider":
             for t in t_docs:
                 td = t.to_dict() or {}
                 tid = t.id
-                # collect reviews for this tiffin
                 revs = list(db.collection("reviews").where("tiffin_id", "==", tid).stream())
                 total_reviews += len(revs)
                 ratings = []
@@ -468,15 +598,20 @@ if role == "Tiffin Provider":
 
                 avg_rating = round((sum(ratings) / len(ratings)) if ratings else 0.0, 2)
                 avg_ai = round((sum(ai_scores) / len(ai_scores)) if ai_scores else 0.0, 2)
-                # pros/cons generation from raw user review texts
+                
                 context = " ".join(texts).strip()
                 if context:
                     try:
-                        pros, cons = generate_pros_cons(context)
+                        pros, cons, suggestion = generate_pros_cons_simple(context, 5, 5)
                     except Exception:
-                        pros, cons = ("Error generating pros", "Error generating cons")
+                        pros = ["Error analyzing reviews"]
+                        cons = ["Error analyzing reviews"]
+                        suggestion = "Please try again later."
                 else:
-                    pros, cons = ("No reviews yet.", "No reviews yet.")
+                    pros = ["No reviews yet."]
+                    cons = ["No reviews yet."]
+                    suggestion = "Collect student reviews to get insights."
+                
                 rows.append({
                     "tiffin_id": tid,
                     "name": td.get("name", "Unnamed"),
@@ -489,11 +624,11 @@ if role == "Tiffin Provider":
                     "avg_ai": avg_ai,
                     "pros": pros,
                     "cons": cons,
+                    "suggestion": suggestion,
                 })
 
             df = pd.DataFrame(rows)
 
-            # Top-level KPIs
             colk1, colk2, colk3 = st.columns(3)
             with colk1:
                 st.metric("Tiffins", len(df))
@@ -505,10 +640,8 @@ if role == "Tiffin Provider":
 
             st.markdown("---")
 
-            # Layout charts and table
             c1, c2 = st.columns([1, 1])
 
-            # Pie chart: food type distribution (by number of tiffins)
             with c1:
                 ft_counts = df['food_type'].value_counts().reset_index()
                 ft_counts.columns = ['food_type', 'count']
@@ -522,7 +655,6 @@ if role == "Tiffin Provider":
                 else:
                     st.write("No data for food type distribution")
 
-            # Bar chart: avg rating per tiffin
             with c2:
                 if not df.empty:
                     bar = alt.Chart(df).mark_bar().encode(
@@ -543,47 +675,78 @@ if role == "Tiffin Provider":
             })
             st.dataframe(display_df.sort_values(by='Reviews', ascending=False))
 
-            # Expandable pros/cons panels per tiffin
-            st.subheader("📋 Detailed Insights")
+            st.markdown("---")
+            st.subheader("📋 Detailed Insights (AI-Powered)")
+            st.markdown("*Pros, Cons, and Improvement Suggestions based on student reviews*")
+            
             for _, row in df.iterrows():
                 tiffin_name = row['name']
-                pros_val = row.get('pros', [])
-                cons_val = row.get('cons', [])
+                pros_list = row.get('pros', [])
+                cons_list = row.get('cons', [])
+                suggestion = row.get('suggestion', '')
+                review_count = row.get('total_reviews', 0)
+                avg_rating = row.get('avg_rating', 0)
+                avg_ai = row.get('avg_ai', 0)
 
-                with st.expander(f"🔍 {tiffin_name} - Pros & Cons"):
+                with st.expander(f"🔍 {tiffin_name} - Analysis ({review_count} reviews)"):
+                    # Header with ratings
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(90deg, #f8fafc, #f1f5f9); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+                        <span style="font-size: 16px; color: #1e293b;">
+                            ⭐ <strong>User Rating:</strong> {avg_rating}/5 | 
+                            🤖 <strong>AI Score:</strong> {avg_ai}/10 |
+                            📝 <strong>Reviews:</strong> {review_count}
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
                     col_pros, col_cons = st.columns(2)
-                    # Pros column
+                    
                     with col_pros:
-                        st.markdown("**✅ Pros:**")
-                        # if pros_val is a dict of categories
-                        if isinstance(pros_val, dict):
-                            for cat, items in pros_val.items():
-                                st.markdown(f"**{cat}:**")
-                                for it in items:
-                                    st.markdown(f"• {it}")
+                        st.markdown("### ✅ Pros (What Students Love)")
+                        if isinstance(pros_list, list):
+                            for idx, pro in enumerate(pros_list[:5], 1):
+                                st.markdown(f"""
+                                <div class="pros-item">
+                                    <span style="color: #16a34a; font-weight: 600;">{idx}.</span> {pro}
+                                </div>
+                                """, unsafe_allow_html=True)
                         else:
-                            # list or single string
-                            pros_list = pros_val if isinstance(pros_val, list) else [pros_val]
-                            for pro in pros_list:
-                                st.markdown(f"• {pro}")
+                            st.markdown(f"""
+                            <div class="pros-item">
+                                <span style="color: #16a34a; font-weight: 600;">1.</span> {pros_list}
+                            </div>
+                            """, unsafe_allow_html=True)
 
-                    # Cons column
                     with col_cons:
-                        st.markdown("**⚠️ Cons:**")
-                        if isinstance(cons_val, dict):
-                            for cat, items in cons_val.items():
-                                st.markdown(f"**{cat}:**")
-                                for it in items:
-                                    st.markdown(f"• {it}")
+                        st.markdown("### ⚠️ Cons (Areas to Improve)")
+                        if isinstance(cons_list, list):
+                            for idx, con in enumerate(cons_list[:5], 1):
+                                st.markdown(f"""
+                                <div class="cons-item">
+                                    <span style="color: #dc2626; font-weight: 600;">{idx}.</span> {con}
+                                </div>
+                                """, unsafe_allow_html=True)
                         else:
-                            cons_list = cons_val if isinstance(cons_val, list) else [cons_val]
-                            for con in cons_list:
-                                st.markdown(f"• {con}")
-    # Provider Top Rated tab
+                            st.markdown(f"""
+                            <div class="cons-item">
+                                <span style="color: #dc2626; font-weight: 600;">1.</span> {cons_list}
+                            </div>
+                            """, unsafe_allow_html=True)
+                    
+                    # Improvement Suggestion
+                    st.markdown("### 💡 AI Suggestion for Improvement")
+                    st.markdown(f"""
+                    <div class="suggestion-box">
+                        <p style="margin: 0; color: #1e40af; font-size: 14px; line-height: 1.6;">
+                            {suggestion}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
     with tab3:
         render_top_rated_section()
 
-    # Provider Profile tab
     with tab4:
         st.subheader("✏️ Edit Your Profile")
         col1, col2 = st.columns(2)
@@ -599,9 +762,7 @@ if role == "Tiffin Provider":
             st.success("✅ Profile Updated!")
             st.rerun()
         
-        # Logout button inside Provider profile to return to registration/login
         if st.button("🔓 Logout", use_container_width=True, key="provider_profile_logout"):
-            # preserve theme and force_register flag so UI remains consistent
             st.session_state["force_register"] = True
             keep = {"theme", "force_register"}
             for k in list(st.session_state.keys()):
@@ -609,13 +770,6 @@ if role == "Tiffin Provider":
                     st.session_state.pop(k, None)
             st.success("✅ Logged out")
             st.rerun()
-
-        # if st.button("🔓 Logout", use_container_width=True, key="student_logout"):
-        #     for k in list(st.session_state.keys()):
-        #         st.session_state.pop(k, None)
-        #     st.success("Logged out")
-        #     st.rerun()
-
 
         st.markdown("---")
         st.subheader("🍱 Manage Your Tiffins")
@@ -631,7 +785,6 @@ if role == "Tiffin Provider":
                 phone = st.text_input("Contact Number", value=user_data.get("phone", ""), key="add_phone")
                 location = st.text_input("Location", value=user_data.get("location", ""), key="add_loc")
                 delivery_locations = st.text_input("Delivery Locations (comma-separated)", placeholder="e.g., RGPV Campus, Downtown", key="add_delivery")
-                # Short description field (limit to ~50 words)
                 description = st.text_area("Short Description (max 50 words)", placeholder="Briefly describe this tiffin in up to 50 words", key="add_description", height=80)
                 food_type = st.selectbox("Food Type", ["Veg", "Non-Veg", "Both"], key="add_food")
                 timing_morning = st.text_input("Morning Timing", placeholder="e.g., 7:00 AM - 9:00 AM")
@@ -649,7 +802,6 @@ if role == "Tiffin Provider":
                     if not name or not location:
                         st.error("❌ Tiffin name and location are required")
                     else:
-                        # enforce ~50-word limit by trimming
                         desc_words = (description or "").split()
                         short_desc = " ".join(desc_words[:50])
                         db.collection("tiffins").add({
@@ -717,8 +869,8 @@ if role == "Tiffin Provider":
                                     "price_daily": e_pd,
                                     "price_per_tiffin": e_pt,
                                     "image_urls": [e_img1, e_img2, e_img3],
-                                        "delivery_locations": [x.strip() for x in e_delivery.split(",") if x.strip()],
-                                        "description": " ".join((e_description or "").split()[:50])
+                                    "delivery_locations": [x.strip() for x in e_delivery.split(",") if x.strip()],
+                                    "description": " ".join((e_description or "").split()[:50])
                                 })
                                 st.success("✅ Updated!")
                                 st.rerun()
@@ -758,7 +910,6 @@ elif role == "Student":
                     continue
             if search_name and search_name.lower() not in data.get("name", "").lower():
                 continue
-            # filter by max monthly price if provided (>0)
             if max_monthly and max_monthly > 0:
                 try:
                     pm = float(data.get("price_monthly") or 0)
@@ -774,11 +925,9 @@ elif role == "Student":
                 c1, c2 = st.columns([2, 3])
 
                 with c1:
-                    # Horizontal swipeable image carousel for students — one large image visible at a time
                     image_list = [img for img in data.get("image_urls", []) if img]
                     if image_list:
                         imgs = []
-                        # use a wide card so only one image fits the view at once; scroll-snap ensures centered snaps
                         for img in image_list:
                             imgs.append(f'<div style="flex:0 0 640px; scroll-snap-align:center; border-radius:12px; overflow:hidden; width:640px; height:360px;"><img src="{img}" style="width:100%; height:100%; object-fit:cover; border-radius:12px; display:block;"/></div>')
                         imgs_html = (
@@ -792,7 +941,6 @@ elif role == "Student":
 
                 with c2:
                     st.markdown(f"### {data.get('name', 'Unknown Tiffin')}")
-                    # show short description if available
                     desc = data.get('description', '')
                     if desc:
                         short_desc = desc if len(desc.split()) <= 50 else ' '.join(desc.split()[:50]) + '...'
@@ -820,10 +968,6 @@ elif role == "Student":
                     - Per Tiffin: ₹{data.get('price_per_tiffin', 0)}
                     """)
 
-                    # Aggregate existing reviews to show metrics above the rating input
-                    col_review = st.columns(1)[0]
-
-                    # fetch reviews for this tiffin
                     rev_docs = list(db.collection("reviews").where("tiffin_id", "==", t.id).stream())
                     avg_user = 0.0
                     avg_ai = 0.0
@@ -844,45 +988,32 @@ elif role == "Student":
                                     ai_scores.append(float(rd.get("ai_score") or 0))
                                 except Exception:
                                     pass
-                                # only use raw user review texts to build the summary context
-                                if rd.get("review"):
-                                    texts.append(str(rd.get("review")))
+                            if rd.get("review"):
+                                texts.append(str(rd.get("review")))
 
                         if ratings:
                             avg_user = sum(ratings) / len(ratings)
                         if ai_scores:
                             avg_ai = sum(ai_scores) / len(ai_scores)
 
-                        # build a short context from user review texts and ask AI to rewrite into 5-7 words
                         context = " ".join(texts)
                         if context:
                             try:
                                 ai_one_line = generate_short_summary(context, min_words=5, max_words=15)
                             except Exception:
-                                # fallback to first 15 words of context
                                 w = context.replace("\n", " ").split()
                                 ai_one_line = " ".join(w[:15]) if w else "No reviews yet."
 
-                    # color coding for AI score: >7 green, 4-7 yellow, <4.5 red
-                    try:
-                        aival = float(avg_ai)
-                    except Exception:
-                        aival = 0.0
-                    if aival > 7:
-                        ai_color = "#16a34a"  # green
-                    elif aival >= 4:
-                        ai_color = "#d97706"  # amber/yellow
+                    if avg_ai > 7:
+                        ai_color = "#16a34a"
+                    elif avg_ai >= 4:
+                        ai_color = "#d97706"
                     else:
-                        ai_color = "#dc2626"  # red
+                        ai_color = "#dc2626"
 
-                    # color coding for user avg: >3.5 green, 2.5-3.5 yellow, else red
-                    try:
-                        uval = float(avg_user)
-                    except Exception:
-                        uval = 0.0
-                    if uval > 3.5:
+                    if avg_user > 3.5:
                         user_color = "#16a34a"
-                    elif uval >= 2.5:
+                    elif avg_user >= 2.5:
                         user_color = "#d97706"
                     else:
                         user_color = "#dc2626"
@@ -898,7 +1029,6 @@ elif role == "Student":
                     if st.button("✅ Submit Review", key=f"btn_{t.id}", use_container_width=True):
                         price_val = data.get('price_per_tiffin', None)
                         ai_score, ai_summary = analyze_review(review, price_val)
-                        # check if this student already has a review for this tiffin
                         existing_rev = None
                         for rr in db.collection("reviews").where("tiffin_id", "==", t.id).where("user_id", "==", user_id).stream():
                             existing_rev = rr
@@ -915,7 +1045,6 @@ elif role == "Student":
                         }
 
                         if existing_rev:
-                            # update the existing review document
                             db.collection("reviews").document(existing_rev.id).update(review_payload)
                             st.success("✅ Review updated!")
                         else:
@@ -939,7 +1068,6 @@ elif role == "Student":
                 st.markdown('</div>', unsafe_allow_html=True)
     
     with tab2:
-        # Student Dashboard (simplified — no business analytics)
         st.subheader("📊 Dashboard")
         t_docs = list(db.collection("tiffins").stream())
         if not t_docs:
@@ -964,13 +1092,11 @@ elif role == "Student":
             with col2:
                 st.metric("Avg Monthly Price", f"₹{avg_monthly}")
             with col3:
-                # show total reviews count across all tiffins
                 rev_count = len(list(db.collection("reviews").stream()))
                 st.metric("Total Reviews", rev_count)
 
             st.markdown("---")
             st.markdown("### 🔝 Top AI-rated Tiffins")
-            # compute avg ai per tiffin
             ai_map = {}
             for r in db.collection("reviews").stream():
                 rd = r.to_dict() or {}
@@ -990,7 +1116,6 @@ elif role == "Student":
                 st.write(f"**{name}** — AI Score: {ai_score}/10")
 
     with tab3:
-        # Top Rated (shared renderer)
         render_top_rated_section()
 
     with tab4:
@@ -1008,9 +1133,7 @@ elif role == "Student":
             st.success("✅ Profile Updated!")
             st.rerun()
 
-        # Logout button inside Student profile to return to registration/login
         if st.button("🔓 Logout", use_container_width=True, key="student_profile_logout"):
-            # preserve theme and force_register flag so UI remains consistent
             st.session_state["force_register"] = True
             keep = {"theme", "force_register"}
             for k in list(st.session_state.keys()):
@@ -1018,3 +1141,6 @@ elif role == "Student":
                     st.session_state.pop(k, None)
             st.success("✅ Logged out")
             st.rerun()
+
+# Close the overlay div
+st.markdown('</div>', unsafe_allow_html=True)
