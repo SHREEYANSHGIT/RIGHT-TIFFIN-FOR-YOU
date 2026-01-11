@@ -79,7 +79,7 @@ streamlit run app.py
 
 ## 🚀 Live Demo
 - MVP Link: https://right-tiffin-for-you-shreeyansh.streamlit.app
-- Demo Video: https://drive.google.com/file/d/1qalJPbz0-ZN0n7nYObtmFOCZJgfT35Mn5/view
+- Demo Video: https://drive.google.com/file/d/1J7WZrBp36Tw8cqe_S5qvJdpMyzwqdloV/view?usp=sharing
 
 ## 📁 Repository Structure
 
